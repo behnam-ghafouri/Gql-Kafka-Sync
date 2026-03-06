@@ -1,0 +1,106 @@
+version: '3.8'
+
+networks:
+  crm-network:
+    driver: bridge
+
+services:
+  postgres:
+    image: postgres:15
+    networks:
+      - crm-network
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: crm_db  # Matches what Identity Service is screaming for
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d crm_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    command: 
+      - "sh"
+      - "-c"
+      - "docker-entrypoint.sh postgres & sleep 5; psql -U user -d crm_db -c 'CREATE DATABASE identity_db;'; psql -U user -d crm_db -c 'CREATE DATABASE crm_db_actual;'; wait"
+    ports:
+      - "5433:5432"
+
+  zookeeper:
+    image: zookeeper:3.9.1
+    networks:
+      - crm-network
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    networks:
+      - crm-network
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    depends_on:
+      - zookeeper
+
+  identity-service:
+    build: ./services/identity-service
+    networks:
+      - crm-network
+    volumes:
+      - ./services/identity-service:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgres://user:password@postgres:5432/crm_db
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - "sh"
+      - "-c"
+      - "python manage.py migrate && python manage.py shell -c \"from django.contrib.auth import get_user_model; User = get_user_model(); not User.objects.filter(username='admin').exists() and User.objects.create_superuser('admin', 'admin@example.com', 'admin')\" && python manage.py runserver 0.0.0.0:8000"
+
+  crm-service:
+    build: ./services/crm-service
+    networks:
+      - crm-network
+    volumes:
+      - ./services/crm-service:/app
+    ports:
+      - "8001:8001"
+    environment:
+      - DATABASE_URL=postgres://user:password@postgres:5432/crm_db_actual
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    command:
+      - "sh"
+      - "-c"
+      - |
+        python manage.py migrate && 
+        python manage.py shell -c "from django.contrib.auth import get_user_model; User = get_user_model(); not User.objects.filter(username='admin').exists() and User.objects.create_superuser('admin', 'admin@example.com', 'admin')" && 
+        python manage.py runserver 0.0.0.0:8001
+
+  identity-consumer:
+    build: ./services/identity-service
+    networks:
+      - crm-network
+    depends_on:
+      - kafka
+      - identity-service
+    command:
+      - "python"
+      - "manage.py"
+      - "shell"
+      - "-c"
+      - "from identity_app.kafka_consumer import run_consumer; run_consumer()"

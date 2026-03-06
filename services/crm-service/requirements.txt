@@ -1,0 +1,7 @@
+django==4.2.7
+strawberry-graphql-django
+psycopg2-binary
+dj-database-url
+django-cors-headers
+requests
+confluent-kafka
