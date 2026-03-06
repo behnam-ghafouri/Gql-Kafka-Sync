@@ -13,3 +13,29 @@ A distributed system consisting of an **Identity Service** and a **CRM Service**
 Everything is containerized. To start the entire environment:
 ```bash
 docker compose up --build
+
+
+http://localhost:8000/graphql/
+
+mutation {
+  createUser(username: "admin", email: "admin@crm.com", password: "password123", role: "ADMIN") {
+    id
+  }
+}
+
+http://localhost:8001/graphql/
+
+mutation {
+  createLead(firstName: "Clark", lastName: "Kent", companyId: 99) {
+    id
+  }
+}
+
+mutation {
+  createDeal(name: "Daily Planet Subscription", value: 150.0, leadId: 1) {
+    id
+    name
+  }
+}
+
+docker compose logs -f identity-consumer
